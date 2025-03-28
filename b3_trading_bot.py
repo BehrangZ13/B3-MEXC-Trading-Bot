@@ -1,30 +1,31 @@
+import os
 import hmac
 import hashlib
 import time
 import requests
 from flask import Flask, request, jsonify
 
-# === CONFIG ===
-API_KEY = 'YOUR_MEXC_API_KEY'
-API_SECRET = 'YOUR_MEXC_API_SECRET'
+# === Get Secrets from Environment Variables ===
+API_KEY = os.getenv("API_KEY")
+API_SECRET = os.getenv("API_SECRET")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
 BASE_URL = 'https://api.mexc.com'
-
 SYMBOL = 'BTC_USDT'
-
-TELEGRAM_TOKEN = 'YOUR_TELEGRAM_BOT_TOKEN'
-TELEGRAM_CHAT_ID = 'YOUR_TELEGRAM_USER_ID'
 
 app = Flask(__name__)
 
-# === Utils ===
+# === Telegram Notification ===
 def send_telegram(msg):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg}
     try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg}
         requests.post(url, json=payload)
     except Exception as e:
-        print("Telegram error:", e)
+        print("Telegram Error:", e)
 
+# === MEXC API Sign Helper ===
 def signed_request(method, endpoint, params=None):
     if params is None:
         params = {}
@@ -40,51 +41,46 @@ def signed_request(method, endpoint, params=None):
     elif method == 'DELETE':
         return requests.delete(url, headers=headers).json()
 
+# === Place Order ===
 def place_order(side, quantity):
-    endpoint = '/api/v3/order'
     params = {
         'symbol': SYMBOL,
         'side': side,
         'type': 'MARKET',
         'quantity': quantity
     }
-    result = signed_request('POST', endpoint, params)
-    send_telegram(f"B3 Bot: {side} order placed for {quantity} {SYMBOL}")
+    result = signed_request('POST', '/api/v3/order', params)
+    send_telegram(f"B3 Bot: {side.upper()} order placed — {quantity} {SYMBOL}")
     return result
 
+# === Cancel All Open Orders ===
 def cancel_all_orders():
-    endpoint = '/api/v3/openOrders'
     params = {'symbol': SYMBOL}
-    result = signed_request('DELETE', endpoint, params)
+    result = signed_request('DELETE', '/api/v3/openOrders', params)
     send_telegram("B3 Bot: All open orders cancelled.")
     return result
 
-# === Webhook Endpoint ===
+# === TradingView Webhook ===
 @app.route('/webhook', methods=['POST'])
 def webhook():
     data = request.json
-    print("Webhook received:", data)
-
-    signal = data.get("action", "").lower()
+    action = data.get("action", "").lower()
     quantity = float(data.get("qty", 0.01))
 
-    if "buy" in signal:
+    if "buy" in action:
         cancel_all_orders()
-        result = place_order("BUY", quantity)
-        return jsonify(result)
+        return jsonify(place_order("BUY", quantity))
 
-    elif "sell" in signal:
+    elif "sell" in action:
         cancel_all_orders()
-        result = place_order("SELL", quantity)
-        return jsonify(result)
+        return jsonify(place_order("SELL", quantity))
 
-    elif "close" in signal:
-        result = cancel_all_orders()
-        return jsonify(result)
+    elif "close" in action:
+        return jsonify(cancel_all_orders())
 
     else:
-        return jsonify({"msg": "Invalid action"})
+        return jsonify({"status": "ignored", "message": "Invalid action received."})
 
 # === Start Server ===
-if __name__ == '__main__':
+if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
